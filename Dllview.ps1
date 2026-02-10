@@ -1,13 +1,25 @@
-﻿# ================= ADMIN CHECK =================
+﻿# ================= GLOBAL SAFETY =================
+$ErrorActionPreference = "Stop"
+trap {
+    Write-Host "`n[!] ERROR DETECTADO:" -ForegroundColor Red
+    Write-Host $_
+    Write-Host "`nPresiona ENTER para salir..."
+    Read-Host
+    break
+}
+
+# ================= ADMIN CHECK =================
 if (-not ([Security.Principal.WindowsPrincipal] `
     [Security.Principal.WindowsIdentity]::GetCurrent()
     ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "[!] Ejecutar como Administrador." -ForegroundColor Red
+    Read-Host
     exit
 }
 
 Clear-Host
 
+# ================= BANNER =================
 $banner = @"
 ██████╗ ██╗     ██╗     ██╗   ██╗██╗███████╗██╗    ██╗
 ██╔══██╗██║     ██║     ██║   ██║██║██╔════╝██║    ██║
@@ -17,7 +29,7 @@ $banner = @"
 ╚═════╝ ╚══════╝╚══════╝ ╚═════╝ ╚═╝╚══════╝ ╚══╝╚══╝
 
         DLLVIEW – SSA
-                    made by rel
+                made by rel
 "@
 
 Write-Host $banner -ForegroundColor Cyan
@@ -29,27 +41,28 @@ $daysBack   = 7
 $since      = (Get-Date).AddDays(-$daysBack)
 $journalOut = "$env:USERPROFILE\Desktop\DLLVIEW_Journal_Report.txt"
 
-Write-Host "[*] Scanning USN JOURNAL..." -ForegroundColor Yellow
+Write-Host "[*] Scanning USN Journal (optimized)..." -ForegroundColor Yellow
 
-# ================= READ JOURNAL =================
-$journalRaw = fsutil usn readjournal $drive csv 2>$null
 $journalEvents = @()
 
+$journalRaw = fsutil usn readjournal $drive csv 2>$null
 if ($journalRaw) {
 
-    $entries = $journalRaw | ConvertFrom-Csv
+    $entries = $journalRaw |
+        Select-String ".dll" |
+        ConvertFrom-Csv
 
-    $journalEvents = foreach ($e in $entries) {
+    foreach ($e in $entries) {
 
         if (-not $e.FileName) { continue }
-        if (-not $e.FileName.ToLower().EndsWith(".dll")) { continue }
+        if ($e.FileName.Length -lt 4) { continue }
+        if (($e.FileName[-4..-1] -join "") -ne ".dll") { continue }
 
         try { $time = [DateTime]::Parse($e.TimeStamp) } catch { continue }
         if ($time -lt $since) { continue }
 
         if ($e.Reason -match "RENAME|OVERWRITE|DATA_EXTEND|DATA_TRUNCATION|FILE_DELETE") {
-
-            [PSCustomObject]@{
+            $journalEvents += [PSCustomObject]@{
                 TimeStamp = $time
                 DLL       = $e.FileName
                 Reason    = $e.Reason
@@ -59,9 +72,7 @@ if ($journalRaw) {
     }
 
     if ($journalEvents.Count -gt 0) {
-        $journalEvents |
-        Sort-Object TimeStamp |
-        ForEach-Object {
+        $journalEvents | Sort-Object TimeStamp | ForEach-Object {
 @"
 ====================================
 Time: $($_.TimeStamp)
@@ -75,14 +86,14 @@ Path: $($_.Path)
         Write-Host "[+] Journal report generado:" -ForegroundColor Green
         Write-Host "    $journalOut" -ForegroundColor Yellow
     } else {
-        Write-Host "[*] No editions in NTFS" -ForegroundColor Green
+        Write-Host "[*] No recent DLL edits in NTFS journal." -ForegroundColor Green
     }
 } else {
-    Write-Host "[!] Could not read journal" -ForegroundColor Red
+    Write-Host "[!] Could not read USN Journal." -ForegroundColor Red
 }
 
 # ================= DLL BEHAVIOR SCAN =================
-Write-Host "`n[*] Scanning DLLs." -ForegroundColor Yellow
+Write-Host "`n[*] Scanning loaded DLLs (optimized)..." -ForegroundColor Yellow
 
 $suspiciousKeywords = @(
     "inject","hook","detour","patch","bypass",
@@ -92,16 +103,18 @@ $suspiciousKeywords = @(
     "mouse","keyboard","input"
 )
 
-$dlls = Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath } | ForEach-Object {
-    try {
-        (Get-Process -Id $_.ProcessId -ErrorAction Stop).Modules
-    } catch {}
-} | Sort-Object FileName -Unique
+$dlls = Get-CimInstance Win32_Process |
+    Where-Object { $_.ExecutablePath } |
+    ForEach-Object {
+        try { (Get-Process -Id $_.ProcessId).Modules } catch {}
+    } |
+    Group-Object FileName |
+    ForEach-Object { $_.Group[0] }
 
 function Get-DllExports {
     param ($Path)
     try {
-        $bytes = [System.IO.File]::ReadAllBytes($Path)
+        $bytes = [System.IO.File]::ReadAllBytes($Path)[0..500000]
         $ascii = [System.Text.Encoding]::ASCII.GetString($bytes)
         $ascii -split "`0" |
         Where-Object {
@@ -119,19 +132,11 @@ $results = foreach ($dll in $dlls) {
     $exports = Get-DllExports $dll.FileName
     $exportCount = $exports.Count
 
-    # ===== FIX DEFINITIVO: SIN PIPE VACÍO =====
-    $matched = @()
-    foreach ($fn in $exports) {
+    $matched = foreach ($fn in $exports) {
         foreach ($kw in $suspiciousKeywords) {
-            if ($fn.ToLower().Contains($kw)) {
-                $matched += $kw
-            }
+            if ($fn -like "*$kw*") { $kw }
         }
-    }
-    if ($matched.Count -gt 0) {
-        $matched = $matched | Select-Object -Unique
-    }
-    # =========================================
+    } | Select-Object -Unique
 
     $score = 0
     $reasons = @()
@@ -161,3 +166,5 @@ $results | Where-Object { $_.Suspicious } |
 Format-Table DLL, Reason, Path -AutoSize
 
 Write-Host "`n[+] DLLVIEW full scan finished." -ForegroundColor Green
+Write-Host "Press enter to exit.." -ForegroundColor DarkGray
+Read-Host
