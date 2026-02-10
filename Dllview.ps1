@@ -119,11 +119,13 @@ $results = foreach ($dll in $dlls) {
     $exports = Get-DllExports $dll.FileName
     $exportCount = $exports.Count
 
+    # ====== FIX DEL BUG (pipe vacío protegido) ======
     $matched = foreach ($fn in $exports) {
         foreach ($kw in $suspiciousKeywords) {
             if ($fn.ToLower().Contains($kw)) { $kw }
         }
-    } | Select-Object -Unique
+    } | Where-Object { $_ } | Select-Object -Unique
+    # ===============================================
 
     $score = 0
     $reasons = @()
