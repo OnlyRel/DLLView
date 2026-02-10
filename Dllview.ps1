@@ -71,14 +71,7 @@ Path: $($_.Path)
 ====================================
 "@
         } | Out-File $journalOut -Encoding UTF8
-
-        Write-Host "[+] Journal report generado:" -ForegroundColor Green
-        Write-Host "    $journalOut" -ForegroundColor Yellow
-    } else {
-        Write-Host "[*] No editions in NFTS" -ForegroundColor Green
     }
-} else {
-    Write-Host "[!] Could not read journal" -ForegroundColor Red
 }
 
 # ================= DLL BEHAVIOR SCAN =================
@@ -93,9 +86,7 @@ $suspiciousKeywords = @(
 )
 
 $dlls = Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath } | ForEach-Object {
-    try {
-        (Get-Process -Id $_.ProcessId -ErrorAction Stop).Modules
-    } catch {}
+    try { (Get-Process -Id $_.ProcessId -ErrorAction Stop).Modules } catch {}
 } | Sort-Object FileName -Unique
 
 function Get-DllExports {
@@ -119,21 +110,23 @@ $results = foreach ($dll in $dlls) {
     $exports = Get-DllExports $dll.FileName
     $exportCount = $exports.Count
 
-    # ====== FIX DEL BUG (pipe vacío protegido) ======
-    $matched = foreach ($fn in $exports) {
-        foreach ($kw in $suspiciousKeywords) {
-            if ($fn.ToLower().Contains($kw)) { $kw }
+    # ===== FIX DEFINITIVO DEL BUG =====
+    $matched = @(
+        foreach ($fn in $exports) {
+            foreach ($kw in $suspiciousKeywords) {
+                if ($fn.ToLower().Contains($kw)) { $kw }
+            }
         }
-    } | Where-Object { $_ } | Select-Object -Unique
-    # ===============================================
+    ) | Where-Object { $_ } | Select-Object -Unique
+    # =================================
 
     $score = 0
     $reasons = @()
 
-    if ($exportCount -gt 120) { $score++; $reasons += "High export count" }
-    if ($exportCount -gt 0 -and $exportCount -lt 5) { $score++; $reasons += "Very low export count" }
-    if ($matched.Count -gt 0) { $score++; $reasons += "Suspicious exports ($($matched -join ','))" }
-    if ($journalEvents.Count -gt 0) { $score++; $reasons += "Recent DLL modification (Journal)" }
+    if ($exportCount -gt 120) { $score++ }
+    if ($exportCount -gt 0 -and $exportCount -lt 5) { $score++ }
+    if ($matched.Count -gt 0) { $score++ }
+    if ($journalEvents.Count -gt 0) { $score++ }
 
     [PSCustomObject]@{
         DLL        = [IO.Path]::GetFileName($dll.FileName)
@@ -141,17 +134,8 @@ $results = foreach ($dll in $dlls) {
         Keywords   = if ($matched) { $matched -join "," } else { "-" }
         Score      = $score
         Suspicious = ($score -ge 2)
-        Reason     = if ($reasons) { $reasons -join " | " } else { "Normal behavior" }
         Path       = $dll.FileName
     }
 }
-
-# ================= OUTPUT =================
-Write-Host "`n========== DLLVIEW RESULTS ==========" -ForegroundColor Cyan
-$results | Format-Table DLL, Exports, Keywords, Score, Suspicious -AutoSize
-
-Write-Host "`n========== FLAGGED DLLs ==========" -ForegroundColor Red
-$results | Where-Object { $_.Suspicious } |
-Format-Table DLL, Reason, Path -AutoSize
 
 Write-Host "`n[+] DLLVIEW full scan finished." -ForegroundColor Green
