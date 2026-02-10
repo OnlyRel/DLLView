@@ -1,8 +1,10 @@
-﻿# =====================================================
-# DLLVIEW
-# DLL Viewer - made by rel
-# Optimized Fast Scan
-# =====================================================
+﻿# ================= ADMIN CHECK =================
+if (-not ([Security.Principal.WindowsPrincipal] `
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host "[!] Ejecutar como Administrador." -ForegroundColor Red
+    exit
+}
 
 Clear-Host
 
@@ -14,90 +16,85 @@ $banner = @"
 ██████╔╝███████╗███████╗╚██████╔╝██║███████╗╚███╔███╔╝
 ╚═════╝ ╚══════╝╚══════╝ ╚═════╝ ╚═╝╚══════╝ ╚══╝╚══╝
 
-        DLL Viewer - made by rel
+        DLLVIEW – SSA
+                    made by rel
 "@
 
 Write-Host $banner -ForegroundColor Cyan
+Start-Sleep 1
 
-# ==============================
-# Logon Time
-# ==============================
-$logonTime = (Get-CimInstance Win32_LogonSession |
-    Sort-Object StartTime |
-    Select-Object -Last 1 |
-    ForEach-Object {
-        [Management.ManagementDateTimeConverter]::ToDateTime($_.StartTime)
-    })
+# ================= CONFIG =================
+$drive      = "C:"
+$daysBack   = 7
+$since      = (Get-Date).AddDays(-$daysBack)
+$outputFile = "$env:USERPROFILE\Desktop\DLLVIEW_Journal_Report.txt"
 
-Write-Host "[+] Logon Time: $logonTime" -ForegroundColor Green
+Write-Host "[*] Leyendo NTFS USN Journal ($drive)..." -ForegroundColor Yellow
 
-# ==============================
-# FAST DLL COLLECTION
-# ==============================
-Write-Host "[+] Collecting loaded DLL paths (fast)..." -ForegroundColor Yellow
+# ================= READ JOURNAL =================
+$raw = fsutil usn readjournal $drive csv 2>$null
+if (-not $raw) {
+    Write-Host "[!] No se pudo leer el USN Journal." -ForegroundColor Red
+    exit
+}
 
-$dllPaths = Get-CimInstance Win32_Process |
-    Where-Object { $_.ExecutablePath } |
-    ForEach-Object {
-        try {
-            (Get-Process -Id $_.ProcessId -ErrorAction Stop).Modules |
-                Select-Object -ExpandProperty FileName
-        } catch {}
-    } |
-    Sort-Object -Unique
+$entries = $raw | ConvertFrom-Csv
 
-Write-Host "[+] Unique DLLs found: $($dllPaths.Count)" -ForegroundColor Green
+Write-Host "[*] Analizando eventos de DLL (últimos $daysBack días)..." -ForegroundColor Yellow
 
-# ==============================
-# FAST SIGNATURE CHECK
-# ==============================
-Write-Host "[+] Verifying digital signatures..." -ForegroundColor Yellow
+# ================= ANALYSIS =================
+$dllEvents = foreach ($e in $entries) {
 
-$dllResults = foreach ($dll in $dllPaths) {
-    if (Test-Path $dll) {
-        $sig = Get-AuthenticodeSignature $dll
+    if (-not $e.FileName) { continue }
+    if (-not $e.FileName.ToLower().EndsWith(".dll")) { continue }
+
+    try {
+        $time = [DateTime]::Parse($e.TimeStamp)
+    } catch { continue }
+
+    if ($time -lt $since) { continue }
+
+    $reason = $e.Reason
+
+    # cambios relevantes
+    if ($reason -match "RENAME|OVERWRITE|DATA_EXTEND|DATA_TRUNCATION|FILE_DELETE") {
+
+        $oldName = "-"
+        if ($reason -match "RENAME_OLD_NAME") { $oldName = "Old name detected" }
+        if ($reason -match "RENAME_NEW_NAME") { $oldName = "Renamed from previous DLL" }
+
         [PSCustomObject]@{
-            DLL       = Split-Path $dll -Leaf
-            Path      = $dll
-            Signed    = $sig.Status
-            Publisher = if ($sig.SignerCertificate) {
-                $sig.SignerCertificate.Subject
-            } else { "Unsigned" }
+            TimeStamp    = $time
+            CurrentName  = $e.FileName
+            PreviousName = $oldName
+            Reason       = $reason
+            Path         = if ($e.FullPath) { $e.FullPath } else { "N/A" }
         }
     }
 }
 
-# ==============================
-# PREFETCH SCAN (FAST)
-# ==============================
-Write-Host "[+] Scanning Prefetch..." -ForegroundColor Yellow
-
-$pfResults = Get-ChildItem "C:\Windows\Prefetch" -Filter "*.pf" -ErrorAction SilentlyContinue |
-    Where-Object { $_.Name -match "REGSVR32|RUNDLL32" } |
-    Select-Object Name, FullName,
-        @{n="LastRun";e={$_.LastWriteTime}},
-        @{n="SizeKB";e={[math]::Round($_.Length/1KB,2)}},
-        @{n="AfterLogon";e={$_.LastWriteTime -gt $logonTime}}
-
-# ==============================
-# SUSPICIOUS ANALYSIS
-# ==============================
-$suspiciousDlls = $dllResults | Where-Object {
-    $_.Signed -ne "Valid" -or
-    $_.Publisher -notmatch "Microsoft"
+# ================= OUTPUT =================
+if (-not $dllEvents -or $dllEvents.Count -eq 0) {
+    Write-Host "[+] No se detectaron modificaciones de DLL en el Journal." -ForegroundColor Green
+    exit
 }
 
-$suspiciousPF = $pfResults | Where-Object {
-    $_.AfterLogon -or $_.SizeKB -gt 500
-}
+Write-Host "[*] Generando reporte TXT..." -ForegroundColor Yellow
 
-# ==============================
-# RESULTS
-# ==============================
-Write-Host "`n========= DLL RESULTS =========" -ForegroundColor Cyan
-$suspiciousDlls | Sort-Object Path | Format-Table -AutoSize
+$dllEvents |
+Sort-Object TimeStamp |
+ForEach-Object {
+@"
+========================================
+Time: $($_.TimeStamp)
+Current DLL: $($_.CurrentName)
+Previous Name: $($_.PreviousName)
+Change Type: $($_.Reason)
+Path: $($_.Path)
+========================================
+"@
+} | Out-File $outputFile -Encoding UTF8
 
-Write-Host "`n========= PREFETCH RESULTS =========" -ForegroundColor Cyan
-$suspiciousPF | Format-Table -AutoSize
-
-Write-Host "`n[+] DLLVIEW scan finished (FAST MODE)." -ForegroundColor Green
+Write-Host "`n[+] DLLVIEW Journal scan finalizado." -ForegroundColor Green
+Write-Host "[+] Reporte generado en:" -ForegroundColor Cyan
+Write-Host "    $outputFile" -ForegroundColor Yellow
