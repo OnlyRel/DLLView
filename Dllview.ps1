@@ -1,4 +1,12 @@
-﻿$banner = @"
+﻿# =====================================================
+# DLLVIEW
+# DLL Viewer - made by rel
+# Optimized Fast Scan
+# =====================================================
+
+Clear-Host
+
+$banner = @"
 ██████╗ ██╗     ██╗     ██╗   ██╗██╗███████╗██╗    ██╗
 ██╔══██╗██║     ██║     ██║   ██║██║██╔════╝██║    ██║
 ██║  ██║██║     ██║     ██║   ██║██║█████╗  ██║ █╗ ██║
@@ -10,70 +18,69 @@
 "@
 
 Write-Host $banner -ForegroundColor Cyan
-Start-Sleep 1
 
 # ==============================
 # Logon Time
 # ==============================
-$logon = Get-CimInstance Win32_LogonSession |
+$logonTime = (Get-CimInstance Win32_LogonSession |
     Sort-Object StartTime |
-    Select-Object -Last 1
+    Select-Object -Last 1 |
+    ForEach-Object {
+        [Management.ManagementDateTimeConverter]::ToDateTime($_.StartTime)
+    })
 
-$LogonTime = [Management.ManagementDateTimeConverter]::ToDateTime($logon.StartTime)
-Write-Host "[+] Logon Time: $LogonTime" -ForegroundColor Green
+Write-Host "[+] Logon Time: $logonTime" -ForegroundColor Green
 
 # ==============================
-# Loaded DLLs Scan
+# FAST DLL COLLECTION
 # ==============================
-Write-Host "`n[+] Scanning loaded DLLs..." -ForegroundColor Yellow
+Write-Host "[+] Collecting loaded DLL paths (fast)..." -ForegroundColor Yellow
 
-$dllResults = @()
+$dllPaths = Get-CimInstance Win32_Process |
+    Where-Object { $_.ExecutablePath } |
+    ForEach-Object {
+        try {
+            (Get-Process -Id $_.ProcessId -ErrorAction Stop).Modules |
+                Select-Object -ExpandProperty FileName
+        } catch {}
+    } |
+    Sort-Object -Unique
 
-Get-Process | ForEach-Object {
-    try {
-        $_.Modules | ForEach-Object {
-            if ($_.FileName -and (Test-Path $_.FileName)) {
-                $sig = Get-AuthenticodeSignature $_.FileName
-                $dllResults += [PSCustomObject]@{
-                    DLLName   = $_.ModuleName
-                    Path      = $_.FileName
-                    Signed    = $sig.Status
-                    Publisher = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { "Unsigned" }
-                }
-            }
+Write-Host "[+] Unique DLLs found: $($dllPaths.Count)" -ForegroundColor Green
+
+# ==============================
+# FAST SIGNATURE CHECK
+# ==============================
+Write-Host "[+] Verifying digital signatures..." -ForegroundColor Yellow
+
+$dllResults = foreach ($dll in $dllPaths) {
+    if (Test-Path $dll) {
+        $sig = Get-AuthenticodeSignature $dll
+        [PSCustomObject]@{
+            DLL       = Split-Path $dll -Leaf
+            Path      = $dll
+            Signed    = $sig.Status
+            Publisher = if ($sig.SignerCertificate) {
+                $sig.SignerCertificate.Subject
+            } else { "Unsigned" }
         }
-    } catch {}
-}
-
-$dllResults = $dllResults | Sort-Object Path -Unique
-
-# ==============================
-# Prefetch Scan (regsvr32 / rundll32)
-# ==============================
-Write-Host "`n[+] Scanning Prefetch files..." -ForegroundColor Yellow
-
-$pfPath = "C:\Windows\Prefetch"
-$targets = @("REGSVR32", "RUNDLL32")
-$pfResults = @()
-
-Get-ChildItem $pfPath -Filter "*.pf" -ErrorAction SilentlyContinue | Where-Object {
-    $targets | Where-Object { $_ -and $_ -in $_.Name }
-} | ForEach-Object {
-
-    $hash = Get-FileHash $_.FullName -Algorithm SHA256
-
-    $pfResults += [PSCustomObject]@{
-        FileName   = $_.Name
-        Path       = $_.FullName
-        LastRun    = $_.LastWriteTime
-        SizeKB     = [math]::Round($_.Length / 1KB, 2)
-        SHA256     = $hash.Hash
-        AfterLogon = ($_.LastWriteTime -gt $LogonTime)
     }
 }
 
 # ==============================
-# Suspicious Analysis
+# PREFETCH SCAN (FAST)
+# ==============================
+Write-Host "[+] Scanning Prefetch..." -ForegroundColor Yellow
+
+$pfResults = Get-ChildItem "C:\Windows\Prefetch" -Filter "*.pf" -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match "REGSVR32|RUNDLL32" } |
+    Select-Object Name, FullName,
+        @{n="LastRun";e={$_.LastWriteTime}},
+        @{n="SizeKB";e={[math]::Round($_.Length/1KB,2)}},
+        @{n="AfterLogon";e={$_.LastWriteTime -gt $logonTime}}
+
+# ==============================
+# SUSPICIOUS ANALYSIS
 # ==============================
 $suspiciousDlls = $dllResults | Where-Object {
     $_.Signed -ne "Valid" -or
@@ -81,22 +88,16 @@ $suspiciousDlls = $dllResults | Where-Object {
 }
 
 $suspiciousPF = $pfResults | Where-Object {
-    $_.AfterLogon -eq $true -or $_.SizeKB -gt 500
+    $_.AfterLogon -or $_.SizeKB -gt 500
 }
 
 # ==============================
 # RESULTS
 # ==============================
-Write-Host "`n================ DLL RESULTS ================" -ForegroundColor Cyan
-$dllResults | Format-Table -AutoSize
+Write-Host "`n========= DLL RESULTS =========" -ForegroundColor Cyan
+$suspiciousDlls | Sort-Object Path | Format-Table -AutoSize
 
-Write-Host "`n[!] Suspicious / Non-signed DLLs:" -ForegroundColor Red
-$suspiciousDlls | Format-Table -AutoSize
-
-Write-Host "`n================ PREFETCH RESULTS ================" -ForegroundColor Cyan
-$pfResults | Format-Table -AutoSize
-
-Write-Host "`n[!] Suspicious regsvr32 / rundll32 executions:" -ForegroundColor Red
+Write-Host "`n========= PREFETCH RESULTS =========" -ForegroundColor Cyan
 $suspiciousPF | Format-Table -AutoSize
 
-Write-Host "`n[+] DLLVIEW scan completed." -ForegroundColor Green
+Write-Host "`n[+] DLLVIEW scan finished (FAST MODE)." -ForegroundColor Green
