@@ -1,55 +1,84 @@
-﻿# ===============================
-# DLLVIEW - made by rel
-# ===============================
+﻿# ================= ADMIN CHECK =================
+if (-not ([Security.Principal.WindowsPrincipal] `
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Write-Host "[!] Ejecutar PowerShell como Administrador" -ForegroundColor Red
+    Read-Host
+    exit
+}
 
 Clear-Host
-Write-Host "===================================" -ForegroundColor Cyan
-Write-Host "        DLLVIEW - made by rel       " -ForegroundColor Cyan
-Write-Host "===================================" -ForegroundColor Cyan
-Write-Host ""
 
-$results = @()
+$banner = @"
+██████╗ ██╗     ██╗     ██╗   ██╗██╗███████╗██╗    ██╗
+██╔══██╗██║     ██║     ██║   ██║██║██╔════╝██║    ██║
+██║  ██║██║     ██║     ██║   ██║██║█████╗  ██║ █╗ ██║
+██║  ██║██║     ██║     ██║   ██║██║██╔══╝  ██║███╗██║
+██████╔╝███████╗███████╗╚██████╔╝██║███████╗╚███╔███╔╝
+╚═════╝ ╚══════╝╚══════╝ ╚═════╝ ╚═╝╚══════╝ ╚══╝╚══╝
 
-# 1️⃣ Procesos + DLLs cargadas (incluye system32)
-Write-Host "[*] Escaneando procesos y DLLs cargadas..."
+        DLLVIEW – made by rel
+"@
+
+Write-Host $banner -ForegroundColor Cyan
+
+# ================= DLLs CARGADAS =================
+Write-Host "`n[*] Escaneando DLLs cargadas..." -ForegroundColor Yellow
+
+$dllList = @()
+
 Get-Process | ForEach-Object {
     try {
         $_.Modules | ForEach-Object {
-            if ($_.FileName -match "System32") {
-                $results += $_.FileName
-            }
+            $dllList += $_.FileName
         }
     } catch {}
 }
 
-# 2️⃣ Prefetch
-Write-Host "[*] Escaneando Prefetch..."
-$prefetch = "C:\Windows\Prefetch"
-if (Test-Path $prefetch) {
-    Get-ChildItem $prefetch -Filter "*.pf" -ErrorAction SilentlyContinue |
-    ForEach-Object {
-        $results += $_.Name
+$dllList = $dllList | Sort-Object -Unique
+
+Write-Host "[+] DLLs cargadas encontradas: $($dllList.Count)" -ForegroundColor Green
+
+# ================= DLLs SOSPECHOSAS =================
+$suspiciousWords = @(
+    "inject","hook","cheat","hack","aim","esp",
+    "overlay","dxgi","d3d","opengl","present"
+)
+
+Write-Host "`n[*] Analizando comportamiento..." -ForegroundColor Yellow
+
+$results = foreach ($dll in $dllList) {
+
+    $score = 0
+    $matches = @()
+
+    foreach ($word in $suspiciousWords) {
+        if ($dll.ToLower().Contains($word)) {
+            $score++
+            $matches += $word
+        }
+    }
+
+    [PSCustomObject]@{
+        DLL        = [IO.Path]::GetFileName($dll)
+        Path       = $dll
+        Score      = $score
+        Keywords   = if ($matches) { $matches -join "," } else { "-" }
+        Suspicious = ($score -ge 2)
     }
 }
 
-# 3️⃣ Journal (básico, no pesado)
-Write-Host "[*] Revisando cambios recientes (Journal simplificado)..."
-Get-ChildItem C:\Windows\System32 -Recurse -ErrorAction SilentlyContinue |
-Where-Object { $_.LastWriteTime -gt (Get-Date).AddDays(-7) } |
-ForEach-Object {
-    $results += "$($_.Name) | Modificado: $($_.LastWriteTime)"
-}
+# ================= RESULTADOS =================
+Write-Host "`n========== RESULTADOS ==========" -ForegroundColor Cyan
 
-# 4️⃣ Output
-$out = "$PSScriptRoot\Dllview_Report.txt"
-$results | Sort-Object -Unique | Out-File -Encoding UTF8 $out
+$results | Format-Table DLL, Score, Keywords, Suspicious -AutoSize
 
-Write-Host ""
-Write-Host "[✓] Escaneo terminado"
-Write-Host "[✓] Reporte guardado en:" -NoNewline
-Write-Host " $out" -ForegroundColor Green
+Write-Host "`n========== DLLs MARCADAS ==========" -ForegroundColor Red
 
-# 🔒 FUERZA QUE NO SE CIERRE
-Write-Host ""
-Write-Host "Presiona ENTER para salir..."
+$results | Where-Object { $_.Suspicious } |
+Format-Table DLL, Keywords, Path -AutoSize
+
+Write-Host "`n[✓] Escaneo finalizado" -ForegroundColor Green
+
+Write-Host "`nPresiona ENTER para salir..."
 Read-Host
