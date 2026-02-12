@@ -1,44 +1,4 @@
-﻿Perfecto, ahora sí quedó clarísimo 👍
-Hacemos esto exactamente como pedís, sin tocar nada raro:
-
-🧠 LÓGICA FINAL (la que querés)
-
-👉 NO se revisan todos los DLL del sistema
-👉 NO se escanean DLLs al azar
-
-El flujo es:
-
-Prefetch
-
-Buscar RUNDLL32*.pf y REGSVR32*.pf
-
-Obtener LastRunTime
-
-Eso marca intento de carga/inyección
-
-NTFS Journal
-
-Buscar DLLs modificadas DESPUÉS del LastRun de regsvr32/rundll32
-
-javaw.exe
-
-Ver qué DLLs están cargadas
-
-Correlacionar solo con:
-
-DLLs tocadas en Journal
-
-intento previo (Prefetch)
-
-Recién ahí marcar sospechoso
-
-Todo pasivo, profesional, en inglés, con banner, y sin TXT externo.
-
-✅ SCRIPT FINAL (FUNCIONAL Y LIMPIO)
-
-Guardalo como Dllview.ps1
-
-# ================= ADMIN CHECK =================
+﻿# ================= ADMIN CHECK =================
 if (-not ([Security.Principal.WindowsPrincipal] `
     [Security.Principal.WindowsIdentity]::GetCurrent()
 ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
